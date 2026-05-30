@@ -1,0 +1,23 @@
+G04 #@! TF.GenerationSoftware,KiCad,Pcbnew,8.0.1*
+G04 #@! TF.CreationDate,2024-08-17T23:53:32-04:00*
+G04 #@! TF.ProjectId,Laser_Timer_PCB,4c617365-725f-4546-996d-65725f504342,V1.0*
+G04 #@! TF.SameCoordinates,Original*
+G04 #@! TF.FileFunction,Profile,NP*
+%FSLAX46Y46*%
+G04 Gerber Fmt 4.6, Leading zero omitted, Abs format (unit mm)*
+G04 Created by KiCad (PCBNEW 8.0.1) date 2024-08-17 23:53:32*
+%MOMM*%
+%LPD*%
+G01*
+G04 APERTURE LIST*
+G04 #@! TA.AperFunction,Profile*
+%ADD10C,0.050000*%
+G04 #@! TD*
+G04 APERTURE END LIST*
+D10*
+X125476000Y-67437000D02*
+X188976000Y-67437000D01*
+X188976000Y-138303000D01*
+X125476000Y-138303000D01*
+X125476000Y-67437000D01*
+M02*
