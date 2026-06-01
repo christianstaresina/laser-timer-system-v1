@@ -1,9 +1,20 @@
-#ifndef _FUNCTIONS_H    // Put these two lines at the top of your file.
-#define _FUNCTIONS_H    // (Use a suitable name, usually based on the file name.)
+/**
+ * functions_laser_timer_v2_rx.h
+ * Laser Timer Firmware v2 — receiver gate 2, timer, menu, and radio logic
+ *
+ * Christian Staresina
+ * 5/31/2026
+ *
+ * Gate 2 (finish) stops the timer and notifies the transmitter via
+ * CMD_GATE2_CLOSED on the return RF pipe.
+ */
 
-#include "macros_for_laser_timer_pcb_v1_2024_rx.h"
+#ifndef FUNCTIONS_LASER_TIMER_V2_RX_H
+#define FUNCTIONS_LASER_TIMER_V2_RX_H
+
+#include "macros_laser_timer_v2_rx.h"
+#include "radio_protocol_v2.h"
 #include <SPI.h>
-#include <nRF24L01.h>
 #include <RF24.h>
 #include <Wire.h>
 //#include <SD.h>
@@ -12,10 +23,8 @@ extern LiquidCrystal_I2C lcd;
 
 // Create gate2 object
 struct Gate {
-  //char position_state; // OPENED or CLOSED
   char timer_state; // ON or OFF
   char able_state; // ENABLED or DISABLED
-  unsigned int timer_count;
 };
 
 extern char initial_menu_state = ON;
@@ -48,14 +57,13 @@ unsigned long lastButtonPress = 0;
 int encoderCLKcount = 0;
 
 // Gate configuration
-Gate gate2 = {OFF, DISABLED, 0};
+Gate gate2 = {OFF, DISABLED};
 bool gate1_opened = false;
 
 // Timer variables
 extern char timer_state = DISABLED;
-bool start_timer = true;
-extern float startMillis = 0;
-extern float currentMillis = 0;
+unsigned long startMillis = 0;
+unsigned long lastDisplayMs = 0;
 extern float periodMillis = 0;
 
 // Menu variables
@@ -74,11 +82,29 @@ extern byte buttonDebounce = 70; // was 20
 extern RF24 radio(9, 10); // CE, CSN (was 7, 8)
 extern const byte addresses[][6] = {"00001", "00002"};
 
+bool radioReady = false;
+unsigned long lastRadioRxMs = 0;
 
+bool gate2BeamWasBroken = false;
+unsigned long finishedUntilMs = 0;
+unsigned long buzzerUntilMs = 0;
 
+#define RX_FINISHED_DISPLAY_MS 1500
+#define RX_BUZZER_ALIGN_MS 450
+#define RX_BUZZER_FINISH_MS 700
+#define RX_BUZZER_HZ 2000
 
+void clearLine1();
+void startRxBuzzer(unsigned long durationMs);
+void handleRxBuzzer();
+void refreshLine1WhenIdle();
+void showPairingScreen();
+void showPairingSuccess();
+void waitForPairing();
+void resumeRxListening();
+void PollRadio();
+void updateLinkDisplay();
 // INITIALIZATIONS
-void Receive_Gate1_Opened_Message();
 void Gate2_Timer_Action();
 void Sense_Gate2();
 void Timer(char timer_state);
@@ -97,12 +123,53 @@ void rotaryEncoder();
 
 // DEFINITIONS
 
+// ---------------------------------------------------------------------------
+// Pairing screens (shared text with transmitter)
+// ---------------------------------------------------------------------------
+
+void showPairingScreen() {
+  lcd.setCursor(0, 0);
+  lcd.print(RADIO_PAIR_LINE0);
+  lcd.setCursor(0, 1);
+  lcd.print(RADIO_PAIR_LINE1);
+}
+
+void showPairingSuccess() {
+  lcd.setCursor(0, 0);
+  lcd.print(RADIO_PAIR_OK0);
+  lcd.setCursor(0, 1);
+  lcd.print(RADIO_PAIR_OK1);
+}
+
+void waitForPairing() {
+  showPairingScreen();
+  while (true) {
+    if (radio.available()) {
+      RadioPacket pkt;
+      radio.read(&pkt, sizeof(pkt));
+      if (pkt.magic == RADIO_MAGIC) {
+        lastRadioRxMs = millis();
+        showPairingSuccess();
+        delay(RADIO_PAIR_OK_MS);
+        resumeRxListening();
+        return;
+      }
+    }
+    delay(RADIO_PAIR_RETRY_MS);
+  }
+}
+
+void resumeRxListening() {
+  radio.openReadingPipe(0, addresses[RADIO_TX_SEND_PIPE]);
+  radio.startListening();
+}
+
 void Timer(char timer_state) {
   switch(timer_state) {
     case ENABLED:
-      Receive_Gate1_Opened_Message();
-      Gate2_Timer_Action();
       Sense_Gate2();
+      Gate2_Timer_Action();
+      refreshLine1WhenIdle();
       if (digitalRead(encoderButton) == LOW) {
         initial_menu_state = ON;
         delay(100);
@@ -112,103 +179,191 @@ void Timer(char timer_state) {
   }
 }
 
-// first gate opened message
-void Receive_Gate1_Opened_Message() {
-  //SPI.beginTransaction(SPISettings(16000000, MSBFIRST, SPI_MODE0));
-  //digitalWrite(radio_cs_pin, LOW); // enable transceiver SPI chip select
-  
-  if (radio.available()) {
-    radio.read(&gate1_opened, sizeof(gate1_opened));
-  }
-      
-  if (gate1_opened) {
-    gate2.timer_state = ON;
-    //gate2.able_state = ENABLED;
+// ---------------------------------------------------------------------------
+// Radio: poll TX packets and restore listen mode after RX transmits
+// ---------------------------------------------------------------------------
+
+void PollRadio() {
+  if (!radioReady) {
+    return;
   }
 
-  //digitalWrite(radio_cs_pin, HIGH);
-  //SPI.endTransaction();
+  while (radio.available()) {
+    RadioPacket pkt;
+    radio.read(&pkt, sizeof(pkt));
+
+    if (pkt.magic != RADIO_MAGIC) {
+      continue;
+    }
+
+    lastRadioRxMs = millis();
+
+    switch (pkt.cmd) {
+      case CMD_GATE1_OPEN:
+        if (timer_state != ENABLED) {
+          break;
+        }
+        gate1_opened = true;
+        if (gate2.timer_state == OFF) {
+          gate2.timer_state = ON;
+          startMillis = millis();
+          lastDisplayMs = 0;
+          finishedUntilMs = 0;
+          gate2BeamWasBroken = (digitalRead(gate2_pin) == GATE_ACTIVATED);
+          clearLine1();
+        }
+        break;
+      case CMD_GATE1_CLOSED:
+        if (timer_state != ENABLED) {
+          break;
+        }
+        gate1_opened = false;
+        break;
+      case CMD_PING:
+        break;
+      default:
+        break;
+    }
+  }
+}
+
+void updateLinkDisplay() {
+  if (gate2.timer_state == ON) {
+    return;
+  }
+
+  if (digitalRead(gate2_pin) == GATE_ACTIVATED) {
+    return;
+  }
+
+  if (finishedUntilMs != 0 && millis() < finishedUntilMs) {
+    return;
+  }
+
+  lcd.setCursor(0, 1);
+  if (lastRadioRxMs == 0 || (millis() - lastRadioRxMs > RADIO_LINK_TIMEOUT_MS)) {
+    lcd.print("No TX signal   ");
+  } else {
+    lcd.print("Ready            ");
+  }
 }
 
 // display elapsed time
 void Gate2_Timer_Action() {
-  switch (gate2.timer_state) {
-    case ON:
-      switch (start_timer) {
-        case true:
-          startMillis = currentMillis = millis();
-          start_timer = false;
-          break;
-        default:
-          currentMillis = millis();
-          break;
-      }
+  if (gate2.timer_state != ON) {
+    return;
+  }
 
-      periodMillis = (currentMillis - startMillis) / 1000;
+  unsigned long now = millis();
+  periodMillis = (now - startMillis) / 1000.0f;
 
-      gate2.timer_count++;
-      switch (gate2.timer_count) {
-        case 2:
-          gate2.timer_count = 0;
-          lcd.setCursor(0,0);
-          lcd.print(periodMillis, 3);
-          lcd.print("s               ");
-        default: break;
-      }
-      break;
-    case OFF: break;
+  if (now - lastDisplayMs >= RADIO_DISPLAY_MS) {
+    lastDisplayMs = now;
+    lcd.setCursor(0, 0);
+    lcd.print(periodMillis, 2);
+    lcd.print("s               ");
   }
 }
 
-// ending gate
-void Sense_Gate2() {
-  if (digitalRead(gate2_pin) == GATE_ACTIVATED) {
-    lcd.setCursor(0,1);
-    lcd.print("Align Laser      ");
-    buzzer_state = ON;
+// ---------------------------------------------------------------------------
+// Line 1 helpers and gate 2 sensor
+// ---------------------------------------------------------------------------
 
-    if (gate2.timer_state == ON) {
-      gate2.timer_state = OFF; // stop timer
-      gate2.timer_count = 0; // reset
-      gate2.able_state = DISABLED;
-      gate1_opened = false; // reset
-      start_timer = true; // reset
-        
-      // display final time
-      lcd.setCursor(0,0);
-      lcd.print(periodMillis, 3);
-      lcd.print("s               ");
-      
-      // display average speed
-      if (distance == ENABLED) {
-        printSpeed();
-      }
-      
-      periodMillis = 0; // reset
-      currentMillis = 0; // reset
-      startMillis = 0; // reset
+void clearLine1() {
+  lcd.setCursor(0, 1);
+  lcd.print("                ");
+}
+
+void startRxBuzzer(unsigned long durationMs) {
+  buzzerUntilMs = millis() + durationMs;
+}
+
+void handleRxBuzzer() {
+  if (buzzerUntilMs != 0 && millis() < buzzerUntilMs) {
+    tone(buzzer_pin, RX_BUZZER_HZ);
+  } else {
+    noTone(buzzer_pin);
+    buzzerUntilMs = 0;
+  }
+}
+
+void refreshLine1WhenIdle() {
+  if (gate2.timer_state == ON) {
+    return;
+  }
+  if (digitalRead(gate2_pin) == GATE_ACTIVATED) {
+    return;
+  }
+  if (finishedUntilMs != 0 && millis() < finishedUntilMs) {
+    return;
+  }
+  updateLinkDisplay();
+}
+
+// Stop timer on gate 2 beam break; show final time and brief "Finished" on line 1
+void stopTimerAtGate2(unsigned long now) {
+  periodMillis = (now - startMillis) / 1000.0f;
+
+  gate2.timer_state = OFF;
+  gate2.able_state = DISABLED;
+  gate1_opened = false;
+
+  lcd.setCursor(0, 0);
+  lcd.print(periodMillis, 2);
+  lcd.print("s               ");
+
+  if (distance == ENABLED) {
+    printSpeed();
+  }
+
+  sendToTransmitter(radio, addresses, CMD_GATE2_CLOSED, true);
+  resumeRxListening();
+
+  finishedUntilMs = now + RX_FINISHED_DISPLAY_MS;
+  lcd.setCursor(0, 1);
+  lcd.print("Finished         ");
+  startRxBuzzer(RX_BUZZER_FINISH_MS);
+
+  periodMillis = 0;
+  startMillis = 0;
+  lastDisplayMs = 0;
+}
+
+void Sense_Gate2() {
+  bool beamBroken = (digitalRead(gate2_pin) == GATE_ACTIVATED);
+  unsigned long now = millis();
+
+  if (finishedUntilMs != 0 && now >= finishedUntilMs) {
+    finishedUntilMs = 0;
+    clearLine1();
+    if (!beamBroken) {
+      refreshLine1WhenIdle();
     }
   }
-  else {
-    lcd.setCursor(0,1);
-    lcd.print("Ready            ");
+
+  // Gate 2 finish: rising edge while timer is running
+  if (beamBroken && !gate2BeamWasBroken && gate2.timer_state == ON) {
+    gate2BeamWasBroken = true;
+    stopTimerAtGate2(now);
+  } else if (beamBroken && !gate2BeamWasBroken) {
+    gate2BeamWasBroken = true;
+    lcd.setCursor(0, 1);
+    lcd.print("Align Laser      ");
+    startRxBuzzer(RX_BUZZER_ALIGN_MS);
+  } else if (!beamBroken && gate2BeamWasBroken) {
+    gate2BeamWasBroken = false;
+    if (finishedUntilMs == 0) {
+      clearLine1();
+      refreshLine1WhenIdle();
+    }
+  } else if (beamBroken && gate2BeamWasBroken) {
+    if (finishedUntilMs != 0 && now < finishedUntilMs) {
+      lcd.setCursor(0, 1);
+      lcd.print("Finished         ");
+    }
   }
 
-  switch (buzzer_state) {
-    case ON:
-      tone(buzzer_pin, 3000); // 3kHZ sound
-      buzzer_count++;
-      switch(buzzer_count) {
-        case 20:
-          noTone(buzzer_pin); // buzzer off
-          buzzer_count = 0;
-          buzzer_state = OFF;
-          break;
-        default: break;
-      }
-      break;
-    default: break;
-  }
+  handleRxBuzzer();
 }
 
 void printSpeed() {
@@ -503,6 +658,7 @@ void openMainMenu()
 
       while (enterMenu == true)
       {
+        PollRadio();
         // Read the current state of CLK
 	      currentStateCLK = digitalRead(encoderCLK);
 
@@ -593,6 +749,10 @@ void executeMainMenuAction()
     case 1:
       timer_state = ENABLED;
       mainMenu = 1;
+      finishedUntilMs = 0;
+      gate2BeamWasBroken = (digitalRead(gate2_pin) == GATE_ACTIVATED);
+      clearLine1();
+      radio.flush_rx();
       lcd.home();
       lcd.print("  Starting...   ");
       lcd.setCursor(0,1);
@@ -645,6 +805,7 @@ void openDistanceMenu()
 
       while (enterMenu == true)
       {
+        PollRadio();
         // Read the current state of CLK
 	      currentStateCLK = digitalRead(encoderCLK);
 
@@ -1061,4 +1222,4 @@ void openMainMenu2()
 
 // TIMER END ---------------------------------------------------------------------------------
 
-#endif // _HEADERFILE_H    // Put this line at the end of your file.
+#endif // FUNCTIONS_LASER_TIMER_V2_RX_H
