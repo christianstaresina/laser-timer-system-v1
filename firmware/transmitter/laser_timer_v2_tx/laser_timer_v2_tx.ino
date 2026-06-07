@@ -30,6 +30,7 @@ void waitForPairing();
 void setup() {
   pinMode(gate1_pin, INPUT);
   pinMode(buzzer_pin, OUTPUT);
+  encoderInitTx();
 
   pinMode(A0, OUTPUT);
   digitalWrite(A0, HIGH);
@@ -80,5 +81,6 @@ void setup() {
 }
 
 void loop() {
+  checkEncoderOpensMenu();
   Sense_Gate1();
 }

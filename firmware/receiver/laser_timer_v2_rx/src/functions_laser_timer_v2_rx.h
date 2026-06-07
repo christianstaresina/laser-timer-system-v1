@@ -1,6 +1,6 @@
 /**
  * functions_laser_timer_v2_rx.h
- * Laser Timer Firmware v2 — receiver gate 2, timer, menu, and radio logic
+ * Laser Timer Firmware v2 — receiver gate 2, timer, and radio logic
  *
  * Christian Staresina
  * 5/31/2026
@@ -14,76 +14,43 @@
 
 #include "macros_laser_timer_v2_rx.h"
 #include "radio_protocol_v2.h"
+#include "settings_rx.h"
+#include "menu_rx.h"
+#include "encoder_rx.h"
+#include "display_rx.h"
 #include <SPI.h>
 #include <RF24.h>
 #include <Wire.h>
-//#include <SD.h>
 #include <LiquidCrystal_I2C.h>
 extern LiquidCrystal_I2C lcd;
 
-// Create gate2 object
 struct Gate {
-  char timer_state; // ON or OFF
-  char able_state; // ENABLED or DISABLED
+  char timer_state;
+  char able_state;
 };
 
-extern char initial_menu_state = ON;
-char distance = ENABLED;
-extern char set_distance_state = DISABLED;
-byte distance_count = 0;
-int distance_in_yards = 40;
 float avg_speed = 0;
-//extern char speedometer_state = DISABLED;
 
-char buzzer_state = OFF;
-int buzzer_count = 0;
-
-// Pin configuration
 extern const byte gate2_pin = 2;
 extern const byte buzzer_pin = 1;
-extern const byte radio_cs_pin = 10; // SPI chip select (CS) pin for slave 1
-extern const byte sd_cs_pin = 8; // SPI chip select (CS) pin for slave 2
+extern const byte radio_cs_pin = 10;
+extern const byte sd_cs_pin = 8;
 
-// Rotary encoder setup
-extern const int encoderButton = 3;
-extern const byte encoderCLK = 4;
-const byte encoderDAT = 5;
-byte counter = 0;
-extern int currentStateCLK = 0;
-int lastStateCLK = 0;
-String currentDir = "";
-unsigned long lastButtonPress = 0;
-
-int encoderCLKcount = 0;
-
-// Gate configuration
 Gate gate2 = {OFF, DISABLED};
 bool gate1_opened = false;
 
-// Timer variables
 extern char timer_state = DISABLED;
 unsigned long startMillis = 0;
 unsigned long lastDisplayMs = 0;
 extern float periodMillis = 0;
 
-// Menu variables
-//extern const byte selectButton = 6;
-extern byte mainMenu = 1;
-//extern byte connectionMenu = 1;
-extern bool enterMenu = false;
-extern byte distanceMenu = 1;
-
-// Menu button debounce
-extern byte previousState = HIGH;
-extern unsigned int previousPress = 0;
-extern volatile byte buttonFlag = 0; // "volatile" for use in interrupt
-extern byte buttonDebounce = 70; // was 20
-
-extern RF24 radio(9, 10); // CE, CSN (was 7, 8)
+extern RF24 radio(9, 10);
 extern const byte addresses[][6] = {"00001", "00002"};
 
 bool radioReady = false;
+bool rxAwaitingFirstLink = true;
 unsigned long lastRadioRxMs = 0;
+unsigned long pairingSuccessUntilMs = 0;
 
 bool gate2BeamWasBroken = false;
 unsigned long finishedUntilMs = 0;
@@ -98,34 +65,18 @@ void clearLine1();
 void startRxBuzzer(unsigned long durationMs);
 void handleRxBuzzer();
 void refreshLine1WhenIdle();
+void restoreIdleDisplay();
 void showPairingScreen();
 void showPairingSuccess();
-void waitForPairing();
+void tickFirstPairing();
 void resumeRxListening();
 void PollRadio();
 void updateLinkDisplay();
-// INITIALIZATIONS
 void Gate2_Timer_Action();
 void Sense_Gate2();
 void Timer(char timer_state);
-void menuInterrupt();
-void updateMainMenu();
-void executeMainMenuAction();
-void openMainMenu();
-void updateDistanceMenu();
-void executeDistanceMenuAction();
-void openDistanceMenu();
 void printSpeed();
-void updateEncoder();
-void rotaryEncoder();
-
-
-
-// DEFINITIONS
-
-// ---------------------------------------------------------------------------
-// Pairing screens (shared text with transmitter)
-// ---------------------------------------------------------------------------
+void checkEncoderOpensMenu();
 
 void showPairingScreen() {
   lcd.setCursor(0, 0);
@@ -141,22 +92,22 @@ void showPairingSuccess() {
   lcd.print(RADIO_PAIR_OK1);
 }
 
-void waitForPairing() {
-  showPairingScreen();
-  while (true) {
-    if (radio.available()) {
-      RadioPacket pkt;
-      radio.read(&pkt, sizeof(pkt));
-      if (pkt.magic == RADIO_MAGIC) {
-        lastRadioRxMs = millis();
-        showPairingSuccess();
-        delay(RADIO_PAIR_OK_MS);
-        resumeRxListening();
-        return;
+void tickFirstPairing() {
+  if (pairingSuccessUntilMs != 0) {
+    if (millis() >= pairingSuccessUntilMs) {
+      pairingSuccessUntilMs = 0;
+      if (!menuIsActive()) {
+        restoreIdleDisplay();
       }
     }
-    delay(RADIO_PAIR_RETRY_MS);
+    return;
   }
+
+  if (!rxAwaitingFirstLink || menuIsActive() || toastActive()) {
+    return;
+  }
+
+  showPairingScreen();
 }
 
 void resumeRxListening() {
@@ -164,24 +115,24 @@ void resumeRxListening() {
   radio.startListening();
 }
 
-void Timer(char timer_state) {
-  switch(timer_state) {
-    case ENABLED:
-      Sense_Gate2();
-      Gate2_Timer_Action();
-      refreshLine1WhenIdle();
-      if (digitalRead(encoderButton) == LOW) {
-        initial_menu_state = ON;
-        delay(100);
-      }
-      break;
-    default: break;
+void checkEncoderOpensMenu() {
+  if (menuIsActive()) {
+    return;
+  }
+  if (pollEncoder() == EncLongPress) {
+    menuRequestOpen();
+    waitForEncoderRelease();
   }
 }
 
-// ---------------------------------------------------------------------------
-// Radio: poll TX packets and restore listen mode after RX transmits
-// ---------------------------------------------------------------------------
+void Timer(char timer_state) {
+  if (timer_state != ENABLED || menuIsActive()) {
+    return;
+  }
+  Sense_Gate2();
+  Gate2_Timer_Action();
+  refreshLine1WhenIdle();
+}
 
 void PollRadio() {
   if (!radioReady) {
@@ -197,6 +148,14 @@ void PollRadio() {
     }
 
     lastRadioRxMs = millis();
+
+    if (rxAwaitingFirstLink) {
+      rxAwaitingFirstLink = false;
+      if (!menuIsActive()) {
+        showPairingSuccess();
+        pairingSuccessUntilMs = millis() + RADIO_PAIR_OK_MS;
+      }
+    }
 
     switch (pkt.cmd) {
       case CMD_GATE1_OPEN:
@@ -227,7 +186,33 @@ void PollRadio() {
   }
 }
 
+void restoreIdleDisplay() {
+  if (menuIsActive()) {
+    return;
+  }
+  if (rxAwaitingFirstLink) {
+    showPairingScreen();
+    return;
+  }
+  lcd.setCursor(0, 0);
+  lcd.print("                ");
+  if (gate2.timer_state == ON) {
+    return;
+  }
+  if (digitalRead(gate2_pin) == GATE_ACTIVATED) {
+    lcd.setCursor(0, 1);
+    lcd.print("Align laser      ");
+    return;
+  }
+  if (finishedUntilMs != 0 && millis() < finishedUntilMs) {
+    return;
+  }
+  updateLinkDisplay();
+}
+
 void updateLinkDisplay() {
+  static bool linkWasLost = false;
+
   if (gate2.timer_state == ON) {
     return;
   }
@@ -240,15 +225,23 @@ void updateLinkDisplay() {
     return;
   }
 
-  lcd.setCursor(0, 1);
-  if (lastRadioRxMs == 0 || (millis() - lastRadioRxMs > RADIO_LINK_TIMEOUT_MS)) {
+  bool linked = lastRadioRxMs != 0 && (millis() - lastRadioRxMs <= RADIO_LINK_TIMEOUT_MS);
+  if (!linked) {
+    linkWasLost = true;
+    lcd.setCursor(0, 1);
     lcd.print("No TX signal   ");
-  } else {
-    lcd.print("Ready            ");
+    return;
   }
+
+  if (linkWasLost) {
+    linkWasLost = false;
+    lcd.setCursor(0, 0);
+    lcd.print("                ");
+  }
+  lcd.setCursor(0, 1);
+  lcd.print("Ready            ");
 }
 
-// display elapsed time
 void Gate2_Timer_Action() {
   if (gate2.timer_state != ON) {
     return;
@@ -264,10 +257,6 @@ void Gate2_Timer_Action() {
     lcd.print("s               ");
   }
 }
-
-// ---------------------------------------------------------------------------
-// Line 1 helpers and gate 2 sensor
-// ---------------------------------------------------------------------------
 
 void clearLine1() {
   lcd.setCursor(0, 1);
@@ -291,16 +280,12 @@ void refreshLine1WhenIdle() {
   if (gate2.timer_state == ON) {
     return;
   }
-  if (digitalRead(gate2_pin) == GATE_ACTIVATED) {
-    return;
-  }
   if (finishedUntilMs != 0 && millis() < finishedUntilMs) {
     return;
   }
-  updateLinkDisplay();
+  restoreIdleDisplay();
 }
 
-// Stop timer on gate 2 beam break; show final time and brief "Finished" on line 1
 void stopTimerAtGate2(unsigned long now) {
   periodMillis = (now - startMillis) / 1000.0f;
 
@@ -322,7 +307,9 @@ void stopTimerAtGate2(unsigned long now) {
   finishedUntilMs = now + RX_FINISHED_DISPLAY_MS;
   lcd.setCursor(0, 1);
   lcd.print("Finished         ");
-  startRxBuzzer(RX_BUZZER_FINISH_MS);
+  if (buzzer_finish_enabled) {
+    startRxBuzzer(RX_BUZZER_FINISH_MS);
+  }
 
   periodMillis = 0;
   startMillis = 0;
@@ -335,26 +322,23 @@ void Sense_Gate2() {
 
   if (finishedUntilMs != 0 && now >= finishedUntilMs) {
     finishedUntilMs = 0;
-    clearLine1();
-    if (!beamBroken) {
-      refreshLine1WhenIdle();
-    }
+    restoreIdleDisplay();
   }
 
-  // Gate 2 finish: rising edge while timer is running
   if (beamBroken && !gate2BeamWasBroken && gate2.timer_state == ON) {
     gate2BeamWasBroken = true;
     stopTimerAtGate2(now);
   } else if (beamBroken && !gate2BeamWasBroken) {
     gate2BeamWasBroken = true;
     lcd.setCursor(0, 1);
-    lcd.print("Align Laser      ");
-    startRxBuzzer(RX_BUZZER_ALIGN_MS);
+    lcd.print("Align laser      ");
+    if (buzzer_align_enabled) {
+      startRxBuzzer(RX_BUZZER_ALIGN_MS);
+    }
   } else if (!beamBroken && gate2BeamWasBroken) {
     gate2BeamWasBroken = false;
     if (finishedUntilMs == 0) {
-      clearLine1();
-      refreshLine1WhenIdle();
+      restoreIdleDisplay();
     }
   } else if (beamBroken && gate2BeamWasBroken) {
     if (finishedUntilMs != 0 && now < finishedUntilMs) {
@@ -362,864 +346,30 @@ void Sense_Gate2() {
       lcd.print("Finished         ");
     }
   }
-
-  handleRxBuzzer();
 }
 
 void printSpeed() {
-  avg_speed = (distance_in_yards / periodMillis) * (3600 / 1760); // (3600 / 1760) is [(# of seconds in 1 hour) / (# of yards in 1 mile)]
-  if (avg_speed < 10) {
-    lcd.setCursor(9,0);
-  }
-  else {
-    lcd.setCursor(8,0);
-  }
-  lcd.print(avg_speed);
-  lcd.print("MPH");
-}
-
-// Rotary encoder function for initial test setup
-void updateEncoder(){
-	// Read the current state of CLK
-	currentStateCLK = digitalRead(encoderCLK);
-
-	// If last and current state of CLK are different, then pulse occurred
-	// React to only 1 state change to avoid double count
-	if (currentStateCLK != lastStateCLK  && currentStateCLK == 1){
-
-		// If the DT state is different than the CLK state then
-		// the encoder is rotating CCW so decrement
-		if (digitalRead(encoderDAT) != currentStateCLK) {
-			counter--;
-			currentDir ="CCW";
-		} else {
-			// Encoder is rotating CW so increment
-			counter++;
-			currentDir ="CW";
-		}
-
-		Serial.print("Direction: ");
-		Serial.print(currentDir);
-		Serial.print(" | Counter: ");
-		Serial.println(counter);
-	}
-
-	// Remember last CLK state
-	lastStateCLK = currentStateCLK;
-}
-
-void rotaryEncoder() {
-  // *NOTE: I initially copied the following rotary encoder code from https://lastminuteengineers.com/rotary-encoder-arduino-tutorial/ on 6/9/2024
-
-  // Read the current state of CLK
-	currentStateCLK = digitalRead(encoderCLK);
-  
-	// If last and current state of CLK are different, then pulse occurred
-	// React to only 1 state change to avoid double count
-	if (currentStateCLK != lastStateCLK) {
-		// If the DT state is different than the CLK state then
-		// the encoder is rotating CW so increment
-		if (digitalRead(encoderDAT) != currentStateCLK) {
-			counter++;
-			currentDir = "CW";
-		}
-    else if (digitalRead(encoderDAT) == currentStateCLK) {
-			// Encoder is rotating CCW so decrement
-			counter--;
-			currentDir = "CCW";
-		}
-
-		Serial.print("Direction: ");
-		Serial.print(currentDir);
-		Serial.print(" | Counter: ");
-		Serial.println(counter);
-	}
-
-	// Remember last CLK state
-	lastStateCLK = currentStateCLK;
-
-	// Read the button state
-	int btnState = digitalRead(encoderButton);
-
-	//If we detect LOW signal, button is pressed
-	if (btnState == LOW) {
-		//if 50ms have passed since last LOW pulse, it means that the
-		//button has been pressed, released and pressed again
-		if (millis() - lastButtonPress > 50) {
-			Serial.println("Button pressed!");
-		}
-
-		// Remember last button press event
-		lastButtonPress = millis();
-	}
-
-	// Put in a slight delay to help debounce the reading
-	//delay(1);
-}
-
-
-/*
-void Set_Distance(char set_distance_state) {
-  switch(set_distance_state) {
-    case ENABLED:
-      
-      break;
-    default: break;
+  if (use_meters) {
+    float distKm = distance_in_yards * 0.9144f / 1000.0f;
+    avg_speed = (distKm / periodMillis) * 3600.0f;
+    lcd.setCursor(avg_speed < 10 ? 9 : 8, 0);
+    lcd.print(avg_speed, 1);
+    lcd.print("KPH");
+  } else {
+    avg_speed = (distance_in_yards / periodMillis) * (3600.0f / 1760.0f);
+    lcd.setCursor(avg_speed < 10 ? 9 : 8, 0);
+    lcd.print(avg_speed, 1);
+    lcd.print("MPH");
   }
 }
 
-void Speedometer(char speedometer_state) {
-  switch(speedometer_state) {
-    case ENABLED:
-      Receive_Gate1_Opened_Message();
-      break;
-    default: break;
-  }
-}
-/*
-
-/*
-void Gate_Open_Or_Closed() {
-  lcd.setCursor(0,1);
-  
-  if (digitalRead(gate2_pin) == GATE_ACTIVATED) {
-    lcd.print("Align Laser      ");
-    buzzer_state = ON;
-  }
-  else {
-    lcd.print("Ready            ");
-  }
-
-  switch (buzzer_state) {
-    case ON:
-      tone(buzzer_pin, 3000); // 3kHZ sound
-      buzzer_count++;
-      switch(buzzer_count) {
-        case 30:
-          noTone(buzzer_pin); // buzzer off
-          buzzer_count = 0;
-          buzzer_state = OFF;
-          break;
-        default: break;
-      }
-      break;
-    default: break;
-  }
-}
-*/
-
-// Custom characters for laser image
-/*
-byte laserBeam[] =
-{
-  B00000,
-  B00000,
-  B00000,
-  B10101,
-  B00000,
-  B00000,
-  B00000,
-  B00000
-};
-*/
-
-byte laserLeft[8] =
-{
-  B11111,
-  B10100,
-  B10011,
-  B11000,
-  B10011,
-  B10011,
-  B01100,
-  B00011
-};
-
-byte laserMid[8] =
-{
-  B11111,
-  B00000,
-  B00000,
-  B11111,
-  B10000,
-  B10000,
-  B10000,
-  B11111
-};
-
-byte laserRight[8] =
-{
-  B00000,
-  B11000,
-  B00100,
-  B11110,
-  B00011,
-  B00010,
-  B00010,
-  B11110
-};
-
-byte antenna[8] =
-{
-  B00000,
-  B00001,
-  B00010,
-  B00100,
-  B11000,
-  B00000,
-  B00000,
-  B00000
-};
-
-byte tripodLeft[8] =
-{
-  B00001,
-  B00011,
-  B00110,
-  B01100,
-  B11000,
-  B00000,
-  B00000,
-  B00000
-};
-
-byte tripodMid[8] =
-{
-  B11100,
-  B10011,
-  B01000,
-  B01000,
-  B00100,
-  B00100,
-  B00010,
-  B00000
-};
-
-byte tripodRight[8] =
-{
-  B00000,
-  B00000,
-  B11000,
-  B00110,
-  B00000,
-  B00000,
-  B00000,
-  B00000
-};
-
-byte backArrow[8] =
-{
-  B00100,
-  B01000,
-  B11111,
-  B01001,
-  B00101,
-  B00001,
-  B01111,
-  B00000
-};
-
-/*
-float speedCalc()
-{
-  return ( (10/periodMillis)*0.68181818 );
-}
-
-float speedCalc3()
-{
-  return ( (10/periodMillis3)*0.68181818 );
-}
-*/
-
-
-void menuInterrupt()
-{
-  buttonFlag = 1;
-}
-
-// Main Menu Start ---------------------------------------------------------
-
-void openMainMenu()
-{
-  if( ( (millis() - previousPress) > buttonDebounce && buttonFlag ) || initial_menu_state == ON ) // && buttonFlag
-  {
-    previousPress = millis();
-    
-    if( (digitalRead(encoderButton) == LOW && previousState == HIGH) || initial_menu_state == ON ) // || digitalRead(selectButton) == LOW
-    {
-      initial_menu_state = OFF;
-      enterMenu = true;
-      lcd.setCursor(0,0);
-      lcd.print("      MENU      ");
-      lcd.setCursor(0,1);
-      lcd.print("                ");
-      delay(1000); // was 1200
-      updateMainMenu();
-
-      while (enterMenu == true)
-      {
-        PollRadio();
-        // Read the current state of CLK
-	      currentStateCLK = digitalRead(encoderCLK);
-
-	      // If last and current state of CLK are different, then pulse occurred
-	      // React to only 1 state change to avoid double count
-	      if (currentStateCLK != lastStateCLK && currentStateCLK == HIGH)
-        {
-          // If the DT state is different than the CLK state then
-		      // the encoder is rotating CW so increment
-		      if (digitalRead(encoderDAT) != currentStateCLK)
-          {
-			      mainMenu++;
-			      updateMainMenu();
-            delay(50);
-		      }
-          else if (digitalRead(encoderDAT) == currentStateCLK)
-          {
-			      // Encoder is rotating CCW so decrement
-			      mainMenu--;
-			      updateMainMenu();
-            delay(50);
-		      }
-	      }
-
-	      // Remember last CLK state
-	      lastStateCLK = currentStateCLK;
-  
-        if (digitalRead(encoderButton) == LOW)
-        {
-          enterMenu = false;
-          executeMainMenuAction();
-          delay(100);
-        }
-
-        //if (digitalRead(menuButton) == LOW)
-        //{
-        //  enterMenu = false;
-        //}
-      }
-      previousState = LOW;
-    }
-    
-    //else if(digitalRead(encoderButton) == HIGH || digitalRead(selectButton) == HIGH && previousState == LOW)
-    //{
-      //previousState = HIGH;
-    //}
-    buttonFlag = 0;
-  }
-}
-
-void updateMainMenu()
-{
-  switch (mainMenu)
-  {
-    case 0: // to keep from scrolling past first menu item
-      mainMenu = 1; // first menu item
-      break;
-    case 1:
-      lcd.setCursor(0,0);
-      lcd.print(">Stopwatch      ");
-      lcd.setCursor(0,1);
-      lcd.print(" Set Speedometer");
-      break;
-    case 2:
-      lcd.setCursor(0,0);
-      lcd.print(" Stopwatch      ");
-      lcd.setCursor(0,1);
-      lcd.print(">Set Speedometer");
-      break;
-    /*
-    case 3:
-      lcd.setCursor(0,0);
-      lcd.print(">Exit Menu      ");
-      lcd.setCursor(0,1);
-      lcd.print("                ");
-      break;
-    */
-    case 3: // to keep from scrolling past last menu item
-      mainMenu = 2; // last menu item
-      break;
-  }
-}
-
-void executeMainMenuAction()
-{
-  switch (mainMenu)
-  {
-    case 1:
-      timer_state = ENABLED;
-      mainMenu = 1;
-      finishedUntilMs = 0;
-      gate2BeamWasBroken = (digitalRead(gate2_pin) == GATE_ACTIVATED);
-      clearLine1();
-      radio.flush_rx();
-      lcd.home();
-      lcd.print("  Starting...   ");
-      lcd.setCursor(0,1);
-      lcd.print("                ");
-      delay(1000);
-      lcd.clear();
-      break;
-    case 2:
-      timer_state = DISABLED;
-      mainMenu = 1;
-      lcd.home();
-      lcd.print(" Speed Settings ");
-      lcd.setCursor(0,1);
-      lcd.print("                ");
-      delay(1000);
-      lcd.clear();
-      //Set_Distance(ENABLED);
-      openDistanceMenu();
-      break;
-    /*
-    case 3:
-      
-      mainMenu = 1;
-      lcd.home();
-      lcd.print("Exiting         ");
-      lcd.setCursor(0,1);
-      lcd.print("                ");
-      delay(1000);
-      lcd.clear();
-      break;
-    */
-  }
-}
-
-// Main Menu End -----------------------------------------------------------
-
-// Distance Menu Start ---------------------------------------------------------
-
-void openDistanceMenu()
-{
-      enterMenu = true;
-      
-      //lcd.setCursor(0,0);
-      //lcd.print("      MENU      ");
-      //lcd.setCursor(0,1);
-      //lcd.print("                ");
-      //delay(1200);
-      
-      updateDistanceMenu();
-
-      while (enterMenu == true)
-      {
-        PollRadio();
-        // Read the current state of CLK
-	      currentStateCLK = digitalRead(encoderCLK);
-
-	      // If last and current state of CLK are different, then pulse occurred
-	      // React to only 1 state change to avoid double count
-	      if (currentStateCLK != lastStateCLK && currentStateCLK == HIGH)
-        {
-          // If the DT state is different than the CLK state then
-		      // the encoder is rotating CW so increment
-		      if (digitalRead(encoderDAT) != currentStateCLK)
-          {
-			      distanceMenu++;
-            updateDistanceMenu();
-            delay(50);
-		      }
-          else
-          {
-			      // Encoder is rotating CCW so decrement
-			      distanceMenu--;
-			      updateDistanceMenu();
-            delay(50);
-		      }
-	      }
-
-	      // Remember last CLK state
-	      lastStateCLK = currentStateCLK;
-  
-        if (digitalRead(encoderButton) == LOW)
-        {
-          enterMenu = false;
-          executeDistanceMenuAction();
-          delay(100);
-          //while (!digitalRead(selectButton));
-        }
-
-        //if (digitalRead(menuButton) == LOW)
-        //{
-        //  enterMenu = false;
-        //}
-      }
-}
-
-void updateDistanceMenu()
-{
-  switch (distanceMenu)
-  {
-    case 0: // to keep from scrolling past first menu item
-      distanceMenu = 1; // first menu item
-      break;
-    case 1:
-      lcd.setCursor(0,0);
-      lcd.print(">Enable/Disable ");
-      lcd.setCursor(0,1);
-      lcd.print(" 40 yards       ");
-      break;
-    case 2:
-      lcd.setCursor(0,0);
-      lcd.print(" Enable/Disable ");
-      lcd.setCursor(0,1);
-      lcd.print(">40 yards       ");
-      break;
-    case 3:
-      lcd.setCursor(0,0);
-      lcd.print(">10 yards       ");
-      lcd.setCursor(0,1);
-      lcd.print(" 5 yards        ");
-      break;
-    case 4:
-      lcd.setCursor(0,0);
-      lcd.print(" 10 yards       ");
-      lcd.setCursor(0,1);
-      lcd.print(">5 yards        ");
-      break;
-    case 5:
-      lcd.setCursor(0,0);
-      lcd.print(">2 yards        ");
-      lcd.setCursor(0,1);
-      lcd.print(" 1 yard         ");
-      break;
-    case 6:
-      lcd.setCursor(0,0);
-      lcd.print(" 2 yards        ");
-      lcd.setCursor(0,1);
-      lcd.print(">1 yard         ");
-      break;
-    case 7:
-      lcd.setCursor(0,0);
-      lcd.print(">Back           ");
-      lcd.setCursor(0,1);
-      lcd.print("                ");
-      break;
-    case 8: // to keep from scrolling past last menu item
-      distanceMenu = 7; // last menu item
-      break;
-    default: break;
-  }
-}
-
-void executeDistanceMenuAction()
-{
-  switch (distanceMenu)
-  {
-    case 1:
-      distanceMenu = 1;
-      switch (distance_count) {
-        case 0:
-          distance = DISABLED;
-          distance_count++;
-          lcd.home();
-          lcd.print(" Speed Disabled ");
-          lcd.setCursor(0,1);
-          lcd.print("                ");
-          delay(1000);
-          lcd.clear();
-          openDistanceMenu();
-          break;
-        case 1:
-          distance = ENABLED;
-          distance_count--;
-          lcd.home();
-          lcd.print(" Speed Enabled  ");
-          lcd.setCursor(0,1);
-          lcd.print("                ");
-          delay(1000);
-          lcd.clear();
-          openDistanceMenu();
-          break;
-      }
-      break;
-    case 2:
-      distanceMenu = 1;
-      distance_in_yards = 40;
-      lcd.home();
-      lcd.print("  40 Yards Set  ");
-      lcd.setCursor(0,1);
-      lcd.print("                ");
-      delay(1000);
-      lcd.clear();
-      openDistanceMenu();
-      break;
-    case 3:
-      distanceMenu = 1;
-      distance_in_yards = 10;
-      lcd.home();
-      lcd.print("  10 Yards Set  ");
-      lcd.setCursor(0,1);
-      lcd.print("                ");
-      delay(1000);
-      lcd.clear();
-      openDistanceMenu();
-      break;
-    case 4:
-      distanceMenu = 1;
-      distance_in_yards = 5;
-      lcd.home();
-      lcd.print("  5 Yards Set   ");
-      lcd.setCursor(0,1);
-      lcd.print("                ");
-      delay(1000);
-      lcd.clear();
-      openDistanceMenu();
-      break;
-    case 5:
-      distanceMenu = 1;
-      distance_in_yards = 2;
-      lcd.home();
-      lcd.print("  2 Yards Set   ");
-      lcd.setCursor(0,1);
-      lcd.print("                ");
-      delay(1000);
-      lcd.clear();
-      openDistanceMenu();
-      break;
-    case 6:
-      distanceMenu = 1;
-      distance_in_yards = 1;
-      lcd.home();
-      lcd.print("  1 Yard Set    ");
-      lcd.setCursor(0,1);
-      lcd.print("                ");
-      delay(1000);
-      lcd.clear();
-      openDistanceMenu();
-      break;
-    case 7:
-      distanceMenu = 1;
-      lcd.home();
-      //lcd.print("   Exiting...   ");
-      //lcd.setCursor(0,1);
-      //lcd.print("                ");
-      //delay(1000);
-      lcd.clear();
-      initial_menu_state = ON;
-      //openMainMenu();
-      break;
-    default: break;
-  }
-}
-
-// Distance Menu End -----------------------------------------------------------
-
-/*
-void executeConnectionMenuAction()
-{
-  switch (connectionMenu)
-  {
-    case 1:
-      connectionMenu = 1;
-      testConnectionTX();
-      break;
-    case 2:
-      connectionMenu = 1;
-      testConnectionRX();
-      break;
-    case 3:
-      //updateMainMenu();
-      connectionMenu = 1;
-      openMainMenu2();
-      break;
-  }
-}
-
-void openConnectionMenu()
-{
-  if((millis() - previousPress) > buttonDebounce)
-  {
-    previousPress = millis();
-    
-    if(digitalRead(selectButton) == LOW && previousState == HIGH)
-    {
-      updateConnectionMenu();
-      previousState = LOW;
-      enterMenu = true;
-      delay(100);
-      
-while (enterMenu == true)
-{
-  if (digitalRead(selectButton) == HIGH && previousState == LOW)
-  {
-    previousState = HIGH;
-  
-    while (previousState == HIGH) // enterMenu == true
-      {
-        if (digitalRead(downButton) == LOW)
-        {
-          connectionMenu++;
-          updateConnectionMenu();
-          delay(100);
-        }
-  
-        if (digitalRead(upButton) == LOW)
-        {
-          connectionMenu--;
-          updateConnectionMenu();
-          delay(100);
-        }
-  
-        if (digitalRead(selectButton) == LOW)
-        {
-          previousState = LOW;
-          enterMenu = false;
-          executeConnectionMenuAction();
-          delay(100);
-          //while (!digitalRead(selectButton));
-        }
-
-        //delay(100);
-        openMainMenu();
-      }
-  }
-openMainMenu();
-}
-      
-      //previousState = LOW;
-    }
-    
-    else if(digitalRead(selectButton) == HIGH && previousState == LOW)
-    {
-      previousState = HIGH;
-    }
-    //buttonFlag = 0;
-  }
-}
-
-void updateConnectionMenu()
-{
-  switch (connectionMenu)
-  {
-    case 0: // to keep from scrolling past first menu item
-      connectionMenu = 1; // first menu item
-      break;
-    case 1:
-      lcd.setCursor(0,0);
-      lcd.print(">Transmit Signal");
-      lcd.setCursor(0,1);
-      lcd.print(" Receive Signal ");
-      break;
-    case 2:
-      lcd.setCursor(0,0);
-      lcd.print(" Transmit Signal");
-      lcd.setCursor(0,1);
-      lcd.print(">Receive Signal ");
-      break;
-    case 3:
-      lcd.setCursor(0,0);
-      lcd.print(">");
-      lcd.print(char(7));
-      lcd.print("Go Back       ");
-      lcd.setCursor(0,1);
-      lcd.print("                ");
-      break;
-    case 4: // to keep from scrolling past last menu item
-      connectionMenu = 3; // last menu item
-      break;
-  }
-}
-*/
-
-/*
-void action2()
-{
-  lcd.clear();
-  lcd.print(">Executing #2");
-  delay(1500);
-}
-void action3()
-{
-  lcd.clear();
-  lcd.print(">Executing #3");
-  delay(1500);
-}
-void action4()
-{
-  lcd.clear();
-  lcd.print(">Executing #4");
-  delay(1500);
-}
-*/
-
-/*
-void printLaserImage()
-{
-  lcd.setCursor(0,0);
-  lcd.print("Pass laser  ");
-  //lcd.print("Ready       ");
-  //lcd.print("            ");
-  lcd.print(char(0));
-  lcd.print(char(1));
-  lcd.print(char(2));
-  lcd.print(char(3));
-  lcd.setCursor(0,1);
-  lcd.print("when ready  ");
-  lcd.print(char(4));
-  lcd.print(char(5));
-  lcd.print(char(6));
-}
-*/
-
-/*
-void openMainMenu2()
-{
-  lcd.home();
-  lcd.clear();
-  lcd.print("openMainMenu2");
-  delay(3000);
-  //if((millis() - previousPress) > buttonDebounce) // && buttonFlag
-  //{
-    //previousPress = millis();
-    
-    //if(digitalRead(selectButton) == LOW && previousState == HIGH)
-    //{
-      enterMenu = true;
-      updateMainMenu();
-
-      while (enterMenu == true)
-      {
-        if (digitalRead(downButton) == LOW)
-        {
-          mainMenu++;
-          updateMainMenu();
-          delay(100);
-        }
-  
-        if (digitalRead(upButton) == LOW)
-        {
-          mainMenu--;
-          updateMainMenu();
-          delay(100);
-        }
-  
-        if (digitalRead(selectButton) == LOW)
-        {
-          enterMenu = false;
-          executeMainMenuAction();
-          delay(100);
-          //while (!digitalRead(selectButton));
-        }
-      }
-      //previousState = LOW;
-    //}
-    
-    //else if(digitalRead(selectButton) == HIGH && previousState == LOW)
-    //{
-      //previousState = HIGH;
-    //}
-    //buttonFlag = 0;
-  //}
-}
-*/
-
-// TIMER BEGINNING ---------------------------------------------------------------------------
-
-
-
-// TIMER END ---------------------------------------------------------------------------------
+byte laserLeft[8] = {B11111,B10100,B10011,B11000,B10011,B10011,B01100,B00011};
+byte laserMid[8] = {B11111,B00000,B00000,B11111,B10000,B10000,B10000,B11111};
+byte laserRight[8] = {B00000,B11000,B00100,B11110,B00011,B00010,B00010,B11110};
+byte antenna[8] = {B00000,B00001,B00010,B00100,B11000,B00000,B00000,B00000};
+byte tripodLeft[8] = {B00001,B00011,B00110,B01100,B11000,B00000,B00000,B00000};
+byte tripodMid[8] = {B11100,B10011,B01000,B01000,B00100,B00100,B00010,B00000};
+byte tripodRight[8] = {B00000,B00000,B11000,B00110,B00000,B00000,B00000,B00000};
+byte backArrow[8] = {B00100,B01000,B11111,B01001,B00101,B00001,B01111,B00000};
 
 #endif // FUNCTIONS_LASER_TIMER_V2_RX_H

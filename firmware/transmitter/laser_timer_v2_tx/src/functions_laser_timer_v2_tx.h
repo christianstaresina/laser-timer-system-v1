@@ -32,6 +32,12 @@ unsigned long buzzerUntilMs = 0;
 extern const byte gate1_pin = 2;
 extern const byte buzzer_pin = 1;
 
+extern const int encoderButton = 3;
+extern const byte encoderCLK = 4;
+extern const byte encoderDAT = 5;
+
+#define TX_ENCODER_LONG_PRESS_MS 800
+
 bool gate1_opened = false;
 bool gateWasOpen = false;
 bool txTimerRunning = false;
@@ -54,6 +60,8 @@ void PollTxRadio();
 void startTxBuzzer(unsigned long durationMs);
 void handleTxBuzzer();
 void Sense_Gate1();
+void encoderInitTx();
+void checkEncoderOpensMenu();
 
 // ---------------------------------------------------------------------------
 // LCD screens
@@ -157,6 +165,45 @@ void PollTxRadio() {
       printLaserImage();
     }
   }
+}
+
+// ---------------------------------------------------------------------------
+// Encoder — long press opens menu (short press ignored)
+// ---------------------------------------------------------------------------
+
+static unsigned long txButtonDownMs = 0;
+static bool txButtonWasDown = false;
+static bool txPressHandled = false;
+
+void encoderInitTx() {
+  pinMode(encoderCLK, INPUT);
+  pinMode(encoderDAT, INPUT);
+  pinMode(encoderButton, INPUT_PULLUP);
+}
+
+void checkEncoderOpensMenu() {
+  unsigned long now = millis();
+  bool buttonDown = digitalRead(encoderButton) == LOW;
+
+  if (buttonDown && !txButtonWasDown) {
+    txButtonDownMs = now;
+    txPressHandled = false;
+  }
+
+  if (buttonDown && !txPressHandled && (now - txButtonDownMs >= TX_ENCODER_LONG_PRESS_MS)) {
+    txPressHandled = true;
+    while (digitalRead(encoderButton) == LOW) {
+      delay(1);
+    }
+    txButtonWasDown = false;
+    // TX menu not implemented yet; long-press is reserved for menu entry.
+  }
+
+  if (!buttonDown && txButtonWasDown && !txPressHandled) {
+    txPressHandled = true;
+  }
+
+  txButtonWasDown = buttonDown;
 }
 
 // ---------------------------------------------------------------------------

@@ -11,13 +11,16 @@
 
 #include "src/functions_laser_timer_v2_rx.h"
 #include "src/macros_laser_timer_v2_rx.h"
+#include "src/settings_rx.h"
+#include "src/menu_rx.h"
+#include "src/encoder_rx.h"
+#include "src/display_rx.h"
 #include <SPI.h>
 #include <RF24.h>
 #include <Wire.h>
 #include <LiquidCrystal_I2C.h>
 extern LiquidCrystal_I2C lcd(0x27, 16, 2);
 
-extern char initial_menu_state;
 extern char timer_state;
 
 extern const byte gate2_pin;
@@ -28,8 +31,7 @@ extern RF24 radio;
 extern const byte addresses[][6];
 extern bool radioReady;
 
-void showPairingScreen();
-void waitForPairing();
+void tickFirstPairing();
 
 void setup() {
   pinMode(gate2_pin, INPUT);
@@ -40,11 +42,9 @@ void setup() {
   digitalWrite(A0, HIGH);
   delay(RADIO_POWER_SETTLE_MS);
 
-  pinMode(encoderCLK, INPUT);
-  pinMode(encoderDAT, INPUT);
-  pinMode(encoderButton, INPUT_PULLUP);
-
-  lastStateCLK = digitalRead(encoderCLK);
+  encoderInit();
+  loadSettings();
+  menuInit();
 
   digitalWrite(radio_cs_pin, HIGH);
   digitalWrite(sd_cs_pin, HIGH);
@@ -84,11 +84,35 @@ void setup() {
 
   radio.openReadingPipe(0, addresses[RADIO_TX_SEND_PIPE]);
   radio.startListening();
-  waitForPairing();
 }
 
 void loop() {
+  static bool toastWasActive = false;
+
   PollRadio();
-  openMainMenu();
-  Timer(timer_state);
+  tickFirstPairing();
+  checkEncoderOpensMenu();
+
+  if (!menuIsActive()) {
+    Timer(timer_state);
+    if (timer_state != ENABLED) {
+      refreshLine1WhenIdle();
+    }
+  } else if (timer_state == ENABLED) {
+    Sense_Gate2();
+  }
+  handleRxBuzzer();
+
+  menuTick();
+
+  bool toastNow = toastActive();
+  toastTick();
+  if (toastWasActive && !toastActive()) {
+    if (menuIsActive()) {
+      menuRefresh();
+    } else {
+      restoreIdleDisplay();
+    }
+  }
+  toastWasActive = toastNow;
 }
