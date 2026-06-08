@@ -1,6 +1,7 @@
 import subprocess
 import tempfile
 import textwrap
+import unittest
 from pathlib import Path
 
 
@@ -169,15 +170,16 @@ def write_stub_headers(stub_dir: Path) -> None:
     )
 
 
-def test_repairing_completes_after_main_loop_drains_radio_packet() -> None:
-    with tempfile.TemporaryDirectory() as tmp:
-        tmp_path = Path(tmp)
-        write_stub_headers(tmp_path)
-        source = tmp_path / "rx_repairing_harness.cpp"
-        binary = tmp_path / "rx_repairing_harness"
-        source.write_text(
-            textwrap.dedent(
-                f"""
+class RxRePairingTest(unittest.TestCase):
+    def test_repairing_completes_after_main_loop_drains_radio_packet(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            write_stub_headers(tmp_path)
+            source = tmp_path / "rx_repairing_harness.cpp"
+            binary = tmp_path / "rx_repairing_harness"
+            source.write_text(
+                textwrap.dedent(
+                    f"""
                 #include <cstdlib>
                 #include <iostream>
 
@@ -260,18 +262,22 @@ def test_repairing_completes_after_main_loop_drains_radio_packet() -> None:
                   return 0;
                 }}
                 """
+                )
             )
-        )
-        subprocess.run(
-            [
-                "g++",
-                "-std=c++17",
-                f"-I{tmp_path}",
-                f"-I{RX_SRC}",
-                str(source),
-                "-o",
-                str(binary),
-            ],
-            check=True,
-        )
-        subprocess.run([str(binary)], check=True)
+            subprocess.run(
+                [
+                    "g++",
+                    "-std=c++17",
+                    f"-I{tmp_path}",
+                    f"-I{RX_SRC}",
+                    str(source),
+                    "-o",
+                    str(binary),
+                ],
+                check=True,
+            )
+            subprocess.run([str(binary)], check=True)
+
+
+if __name__ == "__main__":
+    unittest.main()
