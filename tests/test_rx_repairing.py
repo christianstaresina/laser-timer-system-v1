@@ -76,6 +76,23 @@ def write_stub_headers(stub_dir: Path) -> None:
             """
         )
     )
+    (stub_dir / "Wire.h").write_text(
+        textwrap.dedent(
+            """
+            #ifndef WIRE_H
+            #define WIRE_H
+
+            class TwoWire {
+             public:
+              void begin() {}
+            };
+
+            extern TwoWire Wire;
+
+            #endif
+            """
+        )
+    )
     (stub_dir / "RF24.h").write_text(
         textwrap.dedent(
             """
@@ -185,6 +202,7 @@ class RxRePairingTest(unittest.TestCase):
 
                 #include "Arduino.h"
                 #include "SPI.h"
+                #include "Wire.h"
                 #include "LiquidCrystal_I2C.h"
 
                 unsigned long fakeMillis = 1000;
@@ -197,6 +215,7 @@ class RxRePairingTest(unittest.TestCase):
                 void noTone(int pin) {{}}
 
                 SPIClass SPI;
+                TwoWire Wire;
                 LiquidCrystal_I2C lcd(0x27, 16, 2);
 
                 #include "{RX_SRC / 'functions_laser_timer_v2_rx.h'}"
