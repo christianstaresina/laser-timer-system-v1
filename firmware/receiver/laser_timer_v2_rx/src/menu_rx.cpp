@@ -20,6 +20,7 @@ extern const byte gate2_pin;
 extern bool gate2BeamWasBroken;
 extern unsigned long finishedUntilMs;
 extern unsigned long lastRadioRxMs;
+extern unsigned long radioPacketSequence;
 extern RF24 radio;
 extern const byte addresses[][6];
 extern bool radioReady;
@@ -87,6 +88,7 @@ static unsigned long splashUntilMs = 0;
 static MenuScreen splashNextScreen = MS_Main;
 static uint8_t splashNextIndex = 0;
 static int customEditYards = 40;
+static unsigned long rePairStartPacketSequence = 0;
 
 static uint8_t clampIndex(int index, uint8_t count) {
   if (index < 0) {
@@ -418,6 +420,7 @@ static void actionRadioSelect(uint8_t index) {
       renderCurrentMenu();
       break;
     case RM_RePair:
+      rePairStartPacketSequence = radioPacketSequence;
       menuScreen = MS_RePairing;
       showPairingScreen();
       break;
@@ -531,18 +534,13 @@ static void tickRePairing() {
     return;
   }
 
-  if (radio.available()) {
-    RadioPacket pkt;
-    radio.read(&pkt, sizeof(pkt));
-    if (pkt.magic == RADIO_MAGIC) {
-      lastRadioRxMs = millis();
-      showPairingSuccess();
-      splashUntilMs = millis() + RADIO_PAIR_OK_MS;
-      splashNextScreen = MS_Main;
-      splashNextIndex = 0;
-      menuScreen = MS_Splash;
-      resumeRxListening();
-    }
+  if (radioPacketSequence != rePairStartPacketSequence) {
+    showPairingSuccess();
+    splashUntilMs = millis() + RADIO_PAIR_OK_MS;
+    splashNextScreen = MS_Main;
+    splashNextIndex = 0;
+    menuScreen = MS_Splash;
+    resumeRxListening();
   }
 }
 

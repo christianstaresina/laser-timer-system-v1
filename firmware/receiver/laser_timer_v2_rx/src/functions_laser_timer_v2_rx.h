@@ -50,6 +50,7 @@ extern const byte addresses[][6] = {"00001", "00002"};
 bool radioReady = false;
 bool rxAwaitingFirstLink = true;
 unsigned long lastRadioRxMs = 0;
+unsigned long radioPacketSequence = 0;
 unsigned long pairingSuccessUntilMs = 0;
 
 bool gate2BeamWasBroken = false;
@@ -148,6 +149,7 @@ void PollRadio() {
     }
 
     lastRadioRxMs = millis();
+    radioPacketSequence++;
 
     if (rxAwaitingFirstLink) {
       rxAwaitingFirstLink = false;
