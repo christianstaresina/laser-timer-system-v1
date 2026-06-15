@@ -171,6 +171,7 @@ void PollTxRadio() {
 static unsigned long txButtonDownMs = 0;
 static bool txButtonWasDown = false;
 static bool txPressHandled = false;
+static bool txSuppressUntilRelease = false;
 
 void encoderInitTx() {
   pinMode(encoderCLK, INPUT);
@@ -182,6 +183,17 @@ void checkEncoderOpensMenu() {
   unsigned long now = millis();
   bool buttonDown = digitalRead(encoderButton) == LOW;
 
+  if (txSuppressUntilRelease) {
+    if (!buttonDown) {
+      txSuppressUntilRelease = false;
+      txButtonWasDown = false;
+      txPressHandled = true;
+    } else {
+      txButtonWasDown = true;
+    }
+    return;
+  }
+
   if (buttonDown && !txButtonWasDown) {
     txButtonDownMs = now;
     txPressHandled = false;
@@ -189,10 +201,8 @@ void checkEncoderOpensMenu() {
 
   if (buttonDown && !txPressHandled && (now - txButtonDownMs >= TX_ENCODER_LONG_PRESS_MS)) {
     txPressHandled = true;
-    while (digitalRead(encoderButton) == LOW) {
-      delay(1);
-    }
-    txButtonWasDown = false;
+    txSuppressUntilRelease = true;
+    txButtonWasDown = true;
     // TX menu not implemented yet; long-press is reserved for menu entry.
   }
 
