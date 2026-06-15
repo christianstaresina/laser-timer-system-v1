@@ -44,6 +44,7 @@ bool txTimerRunning = false;
 
 unsigned long lastHeartbeatMs = 0;
 unsigned long lastGateRepeatMs = 0;
+unsigned long txCompleteUntilMs = 0;
 
 extern RF24 radio(9, 10);
 extern const byte addresses[][6] = {"00001", "00002"};
@@ -158,11 +159,7 @@ void PollTxRadio() {
       txTimerRunning = false;
       showTxRunCompleteScreen();
       startTxBuzzer(TX_BUZZER_FINISH_MS);
-      unsigned long completeUntil = millis() + 1500;
-      while (millis() < completeUntil) {
-        handleTxBuzzer();
-      }
-      printLaserImage();
+      txCompleteUntilMs = millis() + 1500;
     }
   }
 }
@@ -174,6 +171,7 @@ void PollTxRadio() {
 static unsigned long txButtonDownMs = 0;
 static bool txButtonWasDown = false;
 static bool txPressHandled = false;
+static bool txSuppressUntilRelease = false;
 
 void encoderInitTx() {
   pinMode(encoderCLK, INPUT);
@@ -185,6 +183,17 @@ void checkEncoderOpensMenu() {
   unsigned long now = millis();
   bool buttonDown = digitalRead(encoderButton) == LOW;
 
+  if (txSuppressUntilRelease) {
+    if (!buttonDown) {
+      txSuppressUntilRelease = false;
+      txButtonWasDown = false;
+      txPressHandled = true;
+    } else {
+      txButtonWasDown = true;
+    }
+    return;
+  }
+
   if (buttonDown && !txButtonWasDown) {
     txButtonDownMs = now;
     txPressHandled = false;
@@ -192,10 +201,8 @@ void checkEncoderOpensMenu() {
 
   if (buttonDown && !txPressHandled && (now - txButtonDownMs >= TX_ENCODER_LONG_PRESS_MS)) {
     txPressHandled = true;
-    while (digitalRead(encoderButton) == LOW) {
-      delay(1);
-    }
-    txButtonWasDown = false;
+    txSuppressUntilRelease = true;
+    txButtonWasDown = true;
     // TX menu not implemented yet; long-press is reserved for menu entry.
   }
 
@@ -237,8 +244,16 @@ void Sense_Gate1() {
   bool gateOpen = (digitalRead(gate1_pin) == GATE_ACTIVATED);
   unsigned long now = millis();
 
+  if (txCompleteUntilMs != 0 && now >= txCompleteUntilMs) {
+    txCompleteUntilMs = 0;
+    if (!gateOpen && !txTimerRunning) {
+      printLaserImage();
+    }
+  }
+
   if (gateOpen && !gateWasOpen) {
     gate1_opened = true;
+    txCompleteUntilMs = 0;
     sendGateOpenBurst(radio, addresses);
     lastGateRepeatMs = now;
     gateWasOpen = true;
@@ -250,7 +265,7 @@ void Sense_Gate1() {
     gate1_opened = false;
     sendPacket(radio, addresses, CMD_GATE1_CLOSED, false);
     gateWasOpen = false;
-    if (!txTimerRunning) {
+    if (!txTimerRunning && txCompleteUntilMs == 0) {
       printLaserImage();
     }
   } else if (!gateOpen && !txTimerRunning && (now - lastHeartbeatMs >= RADIO_HEARTBEAT_MS)) {
