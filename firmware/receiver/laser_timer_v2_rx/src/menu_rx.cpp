@@ -526,12 +526,11 @@ static void handleEncoderNav(EncoderEvent event) {
 }
 
 static void tickRePairing() {
-  PollRadio();
   if (!radioReady) {
     return;
   }
 
-  if (radio.available()) {
+  while (radio.available()) {
     RadioPacket pkt;
     radio.read(&pkt, sizeof(pkt));
     if (pkt.magic == RADIO_MAGIC) {
@@ -561,6 +560,10 @@ void menuRequestOpen() {
 
 bool menuIsActive() {
   return menuScreen != MS_Idle && menuScreen != MS_Splash;
+}
+
+bool menuIsRePairing() {
+  return menuScreen == MS_RePairing;
 }
 
 void menuRefresh() {
