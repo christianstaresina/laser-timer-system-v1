@@ -192,10 +192,6 @@ void checkEncoderOpensMenu() {
 
   if (buttonDown && !txPressHandled && (now - txButtonDownMs >= TX_ENCODER_LONG_PRESS_MS)) {
     txPressHandled = true;
-    while (digitalRead(encoderButton) == LOW) {
-      delay(1);
-    }
-    txButtonWasDown = false;
     // TX menu not implemented yet; long-press is reserved for menu entry.
   }
 

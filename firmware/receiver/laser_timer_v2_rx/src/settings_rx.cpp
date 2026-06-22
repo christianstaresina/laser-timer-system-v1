@@ -23,11 +23,32 @@ struct SettingsBlock {
   uint8_t use_meters;
 };
 
+static bool isEnabledFlag(char value) {
+  return value == ENABLED || value == DISABLED;
+}
+
+static bool isDistanceValid(int16_t yards) {
+  return yards >= 1 && yards <= 99;
+}
+
+static bool isBoolByte(uint8_t value) {
+  return value <= 1;
+}
+
 void loadSettings() {
   SettingsBlock block;
   EEPROM.get(SETTINGS_EEPROM_ADDR, block);
 
   if (block.magic != SETTINGS_EEPROM_MAGIC) {
+    return;
+  }
+
+  if (!isEnabledFlag(block.distance) ||
+      !isDistanceValid(block.distance_in_yards) ||
+      !isDistanceValid(block.custom_distance_yards) ||
+      !isBoolByte(block.buzzer_align) ||
+      !isBoolByte(block.buzzer_finish) ||
+      !isBoolByte(block.use_meters)) {
     return;
   }
 

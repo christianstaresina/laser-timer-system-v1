@@ -30,6 +30,7 @@ void showPairingScreen();
 void showPairingSuccess();
 void resumeRxListening();
 void restoreIdleDisplay();
+void resetStopwatchRunState();
 
 enum MainMenuItem : uint8_t {
   MM_Stopwatch = 0,
@@ -339,9 +340,8 @@ static void setDistanceYards(int yards, const char* toast) {
 static void actionMainSelect(uint8_t index) {
   switch (index) {
     case MM_Stopwatch:
+      resetStopwatchRunState();
       timer_state = ENABLED;
-      finishedUntilMs = 0;
-      gate2BeamWasBroken = (digitalRead(gate2_pin) == GATE_ACTIVATED);
       clearLine1();
       if (radioReady) {
         radio.flush_rx();
