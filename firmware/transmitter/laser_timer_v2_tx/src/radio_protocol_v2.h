@@ -100,4 +100,13 @@ inline void sendGateOpenBurst(RF24 &radio, const byte address[][6]) {
   sendPacket(radio, address, CMD_GATE1_OPEN, true);
 }
 
+inline bool sendGateClosedBurst(RF24 &radio, const byte address[][6]) {
+  for (uint8_t i = 0; i < RADIO_GATE_BURST_COUNT; i++) {
+    if (sendToTransmitter(radio, address, CMD_GATE2_CLOSED, true)) {
+      return true;
+    }
+  }
+  return false;
+}
+
 #endif

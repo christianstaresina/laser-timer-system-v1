@@ -64,9 +64,6 @@ EncoderEvent pollEncoder() {
 }
 
 void waitForEncoderRelease() {
-  while (digitalRead(encoderButton) == LOW) {
-    delay(1);
-  }
-  buttonWasDown = false;
+  buttonWasDown = (digitalRead(encoderButton) == LOW);
   pressHandled = true;
 }
