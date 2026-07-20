@@ -72,6 +72,7 @@ void tickFirstPairing();
 void resumeRxListening();
 void PollRadio();
 void updateLinkDisplay();
+void resetStopwatchRunState();
 void Gate2_Timer_Action();
 void Sense_Gate2();
 void Timer(char timer_state);
@@ -113,6 +114,17 @@ void tickFirstPairing() {
 void resumeRxListening() {
   radio.openReadingPipe(0, addresses[RADIO_TX_SEND_PIPE]);
   radio.startListening();
+}
+
+void resetStopwatchRunState() {
+  gate2.timer_state = OFF;
+  gate2.able_state = DISABLED;
+  gate1_opened = false;
+  periodMillis = 0;
+  startMillis = 0;
+  lastDisplayMs = 0;
+  finishedUntilMs = 0;
+  gate2BeamWasBroken = (digitalRead(gate2_pin) == GATE_ACTIVATED);
 }
 
 void checkEncoderOpensMenu() {
@@ -301,7 +313,7 @@ void stopTimerAtGate2(unsigned long now) {
     printSpeed();
   }
 
-  sendToTransmitter(radio, addresses, CMD_GATE2_CLOSED, true);
+  sendGateClosedBurst(radio, addresses);
   resumeRxListening();
 
   finishedUntilMs = now + RX_FINISHED_DISPLAY_MS;

@@ -56,6 +56,7 @@ inline bool initRadio(RF24 &radio) {
   radio.setDataRate(RF24_250KBPS);
   radio.setChannel(RADIO_CHANNEL);
   radio.setAutoAck(true);
+  radio.enableDynamicAck();
   radio.setRetries(5, 15);
   radio.setCRCLength(RF24_CRC_16);
   radio.setPayloadSize(sizeof(RadioPacket));
@@ -75,7 +76,7 @@ inline bool sendPacketOnPipe(RF24 &radio, const byte address[][6], uint8_t pipeI
 
   const uint8_t maxAttempts = requireAck ? 10 : 1;
   for (uint8_t attempt = 0; attempt < maxAttempts; attempt++) {
-    if (radio.write(&pkt, sizeof(pkt), requireAck)) {
+    if (radio.write(&pkt, sizeof(pkt), !requireAck)) {
       return true;
     }
     if (requireAck) {
@@ -98,6 +99,15 @@ inline void sendGateOpenBurst(RF24 &radio, const byte address[][6]) {
     sendPacket(radio, address, CMD_GATE1_OPEN, false);
   }
   sendPacket(radio, address, CMD_GATE1_OPEN, true);
+}
+
+inline bool sendGateClosedBurst(RF24 &radio, const byte address[][6]) {
+  for (uint8_t i = 0; i < RADIO_GATE_BURST_COUNT; i++) {
+    if (sendToTransmitter(radio, address, CMD_GATE2_CLOSED, true)) {
+      return true;
+    }
+  }
+  return false;
 }
 
 #endif
