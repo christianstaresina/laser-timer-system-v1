@@ -56,9 +56,13 @@ The checked-in KiCad PCB maps:
 
 That means the current firmware power-enable pin does not match the checked-in
 PCB's 3.3 V regulator enable net. Before ordering boards, changing regulator
-control, or debugging radio power-up failures, decide whether the firmware
-should drive the PCB's `A7` enable net or whether a different board revision
-wires `A0` to radio power.
+control, or debugging radio power-up failures, resolve this in hardware. On the
+ATmega328P-based Nano, `A7` is analog-input-only and cannot drive the regulator
+enable with `pinMode()`/`digitalWrite()`, so changing the firmware constant from
+`A0` to `A7` is not a valid fix. A board revision can route the enable signal to
+a digital-capable GPIO such as `A0`, or the regulator enable can be strapped to
+the required level if software control is not needed. Confirm the intended
+power sequencing before choosing either option.
 
 ## Production checklist
 
@@ -70,6 +74,7 @@ house or assembler:
 2. Confirm the hardware role-specific population/wiring for transmitter vs
    receiver. The PCB is shared, but the flashed sketch determines the unit role.
 3. Confirm the LCD backpack address is `0x27` or update both sketches.
-4. Confirm the nRF24 module power path and the `A0`/`A7` enable mismatch above.
+4. Confirm the nRF24 module power path and resolve the `A0`/`A7` enable mismatch
+   above; Nano `A7` cannot be used as a digital output.
 5. Keep firmware pin constants synchronized with the PCB nets listed in this
    document.

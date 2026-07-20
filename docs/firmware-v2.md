@@ -79,8 +79,16 @@ Radio settings:
 - CRC-16, auto-ack enabled, payload size `sizeof(RadioPacket)`
 - Retries `5, 15`
 - PA level starts at `RF24_PA_MIN` during init and is raised to `RF24_PA_HIGH`
-- Gate-open burst: three unacknowledged `CMD_GATE1_OPEN` packets followed by one
-  acknowledged packet
+- Gate-open burst: three calls marked `requireAck = false`, followed by one
+  call marked `requireAck = true`
+
+The `requireAck` helper argument does not currently provide per-packet ACK
+control. It is passed directly to RF24's `write(..., multicast)` argument,
+where `true` means NOACK and `false` means ACK, and `initRadio()` does not call
+`enableDynamicAck()`. With the checked-in configuration, global auto-ack
+remains enabled and the multicast argument has no effect. Do not infer
+acknowledgement behavior from the helper argument names; fix and hardware-test
+this wrapper before depending on mixed ACK/NOACK delivery.
 
 Timing constants:
 
@@ -96,6 +104,28 @@ Timing constants:
 
 ## Runtime flow
 
+### Receiver module boundaries
+
+The receiver sketch is intentionally split so the loop can service radio,
+timing, input, and transient LCD messages without putting the whole unit into a
+blocking menu:
+
+| Module | Responsibility |
+| --- | --- |
+| `laser_timer_v2_rx.ino` | Initializes hardware and schedules radio, timer, buzzer, menu, and toast work each loop. |
+| `src/functions_laser_timer_v2_rx.h` | Owns the gate 2 timer, radio packet handling, link state, speed calculation, and buzzer timing. |
+| `src/menu_rx.cpp` | Implements the `MenuScreen` state machine and menu actions. |
+| `src/encoder_rx.cpp` | Debounces rotation and classifies short and long button presses. |
+| `src/display_rx.cpp` | Formats 16x2 LCD lines and manages non-blocking toast expiry. |
+| `src/settings_rx.cpp` | Loads and saves receiver settings in EEPROM. |
+
+`PollRadio()` and `tickFirstPairing()` run on every receiver loop. When the menu
+is closed, `Timer()` handles gate 2 and display updates. When the menu is open
+and the stopwatch is armed, the loop still calls `Sense_Gate2()` so an active
+run can finish. `menuTick()` advances the menu state machine, and `toastTick()`
+expires short status messages before the appropriate menu or idle screen is
+restored.
+
 ### Boot and pairing
 
 1. Receiver setup initializes GPIO, loads EEPROM settings, initializes the menu,
@@ -103,12 +133,18 @@ Timing constants:
    starts listening.
 2. Transmitter setup initializes GPIO, LCD, SPI, and RF24, then calls
    `waitForPairing()`.
-3. `waitForPairing()` blocks in transmitter setup until an acknowledged
-   `CMD_PING` succeeds. The transmitter then opens the RX -> TX pipe and starts
+3. `waitForPairing()` blocks in transmitter setup until the send helper reports
+   success. With global auto-ack enabled, this is intended to represent delivery
+   of `CMD_PING`. The transmitter then opens the RX -> TX pipe and starts
    listening for finish packets.
 
 Power the receiver first during normal operation. If the receiver is not
 listening, the transmitter remains on the "Pairing..." screen.
+
+Receiver pairing is non-blocking. Until its first valid packet,
+`tickFirstPairing()` keeps the pairing prompt visible when no menu or toast is
+active, but the encoder can still open the menu. The first packet clears
+`rxAwaitingFirstLink` and shows the success screen for `RADIO_PAIR_OK_MS`.
 
 ### Starting and finishing a run
 
@@ -185,6 +221,9 @@ add a migration/version strategy before shipping the change.
 
 - The transmitter pairing loop is blocking; start the receiver first when
   testing the link.
+- `sendPacketOnPipe(..., requireAck)` passes that boolean to RF24 as
+  `multicast`, whose polarity and setup requirements differ. See the radio
+  protocol note above before changing retry or burst behavior.
 - Selecting **Stopwatch** arms the receiver. Gate packets are ignored while the
   receiver-level `timer_state` is disabled.
 - The receiver still checks gate 2 while the menu is open if the stopwatch is

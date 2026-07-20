@@ -60,4 +60,5 @@ Before spinning hardware or changing firmware pin assignments, review
 `docs/hardware-production.md`. It documents the current PCB pin map and calls
 out a source-verified mismatch: the v2 firmware drives `A0` high for radio power
 settling, while the checked-in KiCad PCB labels the 3.3 V regulator enable net
-as `A7`/`3V3_EN`.
+as `A7`/`3V3_EN`. Nano `A7` is analog-input-only, so this requires a hardware or
+power-strapping decision rather than a firmware-only pin rename.
