@@ -22,6 +22,7 @@ enum MenuScreen : uint8_t {
 void menuInit();
 void menuRequestOpen();
 bool menuIsActive();
+bool menuIsRePairing();
 void menuRefresh();
 void menuTick();
 
