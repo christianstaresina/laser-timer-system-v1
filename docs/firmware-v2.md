@@ -374,17 +374,28 @@ From sketch headers and includes (no PlatformIO / CI config in repo):
 
 No `platformio.ini`, Makefile, or library version pins are present in-tree.
 
-## 8. Suggested documentation sections (gaps vs product README)
+## 8. Troubleshooting
 
-The root README describes product intent only (start/finish timing, optional speed). Useful doc sections beyond that:
+| Symptom | Likely cause |
+| --- | --- |
+| `Radio not found` | `radio.begin()` failed: wiring, CE/CSN 9/10, or radio power path (`docs/hardware-production.md`). |
+| TX stuck on `Pairing...` | RX not powered / not listening on `"00002"`, or ACK path failing. Power RX first. |
+| RX `No TX signal` | No valid packet within 2 s; check TX power, range, channel 108. |
+| RX `Align laser` | Gate 2 sensor pin is `HIGH` while idle; realign or check polarity. |
+| Timing never starts | Arm **Stopwatch** before breaking gate 1. |
+| No speed line | Enable speed and set distance in the Speed menu. |
+| Flaky upload / serial | Buzzer shares `D1` / Nano TX. |
+| Re-pair never auto-exits | Packet drain before `tickRePairing` sees `radio.available()`; leave with a press. |
+| Second run starts without menu | Expected: after finish, `timer_state` stays `ENABLED`. |
 
-1. **Firmware map** — TX vs RX folders, modular RX files, three-way protocol header sync rule  
-2. **RF protocol** — packet layout, cmds, addresses/pipes, timing constants, burst/heartbeat  
-3. **State machines** — TX `txTimerRunning` / gate edges; RX `timer_state` vs `gate2.timer_state`; arm-once-run-many behavior  
-4. **Pairing & link** — boot pair vs menu re-pair; link timeout UX; known re-pair drain bug  
-5. **UI reference** — every menu item, toast strings, encoder gestures  
-6. **Settings / EEPROM layout** — field list, magic, defaults, units conversion  
-7. **Hardware ↔ firmware pin map** — including A0 vs A7 / `3V3_EN` discrepancy  
-8. **Known issues** — ack polarity, blocking waits, `flush_rx`, unused SD CS / dead state fields  
-9. **Build & flash** — board, libraries, which folder to open, dual-unit flash order (pair after both up)  
-10. **Change checklist** — when editing protocol, update all three headers and both sketches’ send/listen assumptions  
+## 9. Change checklist
+
+When changing the radio contract or pin map:
+
+1. Edit all three `radio_protocol_v2.h` copies in the same commit (or switch sketches to a single include).
+2. Keep TX write / RX listen addresses matched (`"00002"` primary, `"00001"` return).
+3. Re-test pairing (RX first), an armed run, finish notify, and TX complete UI.
+4. If GPIO changes, update both sketches and `docs/hardware-production.md`.
+5. If `SettingsBlock` layout changes, add a migration strategy beyond magic `0x52`.
+
+Hardware pin map and fab artifacts: [`docs/hardware-production.md`](hardware-production.md).
