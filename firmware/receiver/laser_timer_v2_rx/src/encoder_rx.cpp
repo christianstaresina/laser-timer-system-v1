@@ -14,6 +14,7 @@ static unsigned long lastStepMs = 0;
 static unsigned long buttonDownMs = 0;
 static bool buttonWasDown = false;
 static bool pressHandled = false;
+static bool suppressUntilRelease = false;
 
 void encoderInit() {
   pinMode(encoderCLK, INPUT);
@@ -25,6 +26,19 @@ void encoderInit() {
 EncoderEvent pollEncoder() {
   EncoderEvent event = EncNone;
   unsigned long now = millis();
+  bool buttonDown = digitalRead(encoderButton) == LOW;
+
+  if (suppressUntilRelease) {
+    lastStateCLK = digitalRead(encoderCLK);
+    if (!buttonDown) {
+      suppressUntilRelease = false;
+      buttonWasDown = false;
+      pressHandled = true;
+    } else {
+      buttonWasDown = true;
+    }
+    return EncNone;
+  }
 
   int currentStateCLK = digitalRead(encoderCLK);
   if (currentStateCLK != lastStateCLK && currentStateCLK == HIGH) {
@@ -39,7 +53,6 @@ EncoderEvent pollEncoder() {
   }
   lastStateCLK = currentStateCLK;
 
-  bool buttonDown = digitalRead(encoderButton) == LOW;
   if (buttonDown && !buttonWasDown) {
     buttonDownMs = now;
     pressHandled = false;
@@ -64,9 +77,11 @@ EncoderEvent pollEncoder() {
 }
 
 void waitForEncoderRelease() {
-  while (digitalRead(encoderButton) == LOW) {
-    delay(1);
+  if (digitalRead(encoderButton) == LOW) {
+    suppressUntilRelease = true;
+    buttonWasDown = true;
+  } else {
+    buttonWasDown = false;
   }
-  buttonWasDown = false;
   pressHandled = true;
 }

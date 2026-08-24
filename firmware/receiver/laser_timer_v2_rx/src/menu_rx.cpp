@@ -30,6 +30,7 @@ void showPairingScreen();
 void showPairingSuccess();
 void resumeRxListening();
 void restoreIdleDisplay();
+void resetStopwatchRunState();
 
 enum MainMenuItem : uint8_t {
   MM_Stopwatch = 0,
@@ -339,9 +340,8 @@ static void setDistanceYards(int yards, const char* toast) {
 static void actionMainSelect(uint8_t index) {
   switch (index) {
     case MM_Stopwatch:
+      resetStopwatchRunState();
       timer_state = ENABLED;
-      finishedUntilMs = 0;
-      gate2BeamWasBroken = (digitalRead(gate2_pin) == GATE_ACTIVATED);
       clearLine1();
       if (radioReady) {
         radio.flush_rx();
@@ -526,12 +526,11 @@ static void handleEncoderNav(EncoderEvent event) {
 }
 
 static void tickRePairing() {
-  PollRadio();
   if (!radioReady) {
     return;
   }
 
-  if (radio.available()) {
+  while (radio.available()) {
     RadioPacket pkt;
     radio.read(&pkt, sizeof(pkt));
     if (pkt.magic == RADIO_MAGIC) {
@@ -542,6 +541,7 @@ static void tickRePairing() {
       splashNextIndex = 0;
       menuScreen = MS_Splash;
       resumeRxListening();
+      return;
     }
   }
 }
@@ -561,6 +561,10 @@ void menuRequestOpen() {
 
 bool menuIsActive() {
   return menuScreen != MS_Idle && menuScreen != MS_Splash;
+}
+
+bool menuIsRePairing() {
+  return menuScreen == MS_RePairing;
 }
 
 void menuRefresh() {
