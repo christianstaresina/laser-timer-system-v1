@@ -301,7 +301,7 @@ void stopTimerAtGate2(unsigned long now) {
     printSpeed();
   }
 
-  sendToTransmitter(radio, addresses, CMD_GATE2_CLOSED, true);
+  sendGateClosedBurst(radio, addresses);
   resumeRxListening();
 
   finishedUntilMs = now + RX_FINISHED_DISPLAY_MS;
