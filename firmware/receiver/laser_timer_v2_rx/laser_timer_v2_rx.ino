@@ -89,8 +89,10 @@ void setup() {
 void loop() {
   static bool toastWasActive = false;
 
-  PollRadio();
-  tickFirstPairing();
+  if (!menuIsRePairing()) {
+    PollRadio();
+    tickFirstPairing();
+  }
   checkEncoderOpensMenu();
 
   if (!menuIsActive()) {
